@@ -20,7 +20,7 @@ FIELDNAMES = [
     "phase", "breakout", "pullback", "exhausted", "move",
     "price", "ema20", "ema50", "vwap",
     "pcr", "oi_signal", "support", "resistance",
-    "reasons",
+    "reasons", "ai_narrative",
 ]
 
 
@@ -69,6 +69,7 @@ def log_cycle(market, option_result, decision, engine_recommendation=None):
         "support": decision.get("support"),
         "resistance": decision.get("resistance"),
         "reasons": "; ".join(decision.get("reasons", [])),
+        "ai_narrative": (decision.get("ai_narrative") or "").replace("\r\n", " | ").replace("\n", " | "),
     }
 
     path = _today_file()

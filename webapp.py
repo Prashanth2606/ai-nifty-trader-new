@@ -87,6 +87,7 @@ if should_run:
                 with st.spinner("Asking Claude to narrate..."):
                     try:
                         advice = AIAdvisor().get_advice(market, option_result, decision)["text"]
+                        decision["ai_narrative"] = advice
                     except Exception as ex:
                         advice = f"Claude error: {ex}"
 

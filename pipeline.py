@@ -139,6 +139,7 @@ def confirm_with_ai(market, option_result, decision):
 
     decision["engine_recommendation"] = engine_recommendation
     decision.setdefault("ai_verdict", None)
+    decision.setdefault("ai_narrative", None)
 
     if engine_recommendation not in ("BUY CALL", "BUY PUT"):
         return decision, None
@@ -154,6 +155,7 @@ def confirm_with_ai(market, option_result, decision):
         return decision, None
 
     decision["ai_verdict"] = advice["verdict"]
+    decision["ai_narrative"] = advice["text"]
 
     if advice["verdict"] != "CONFIRM":
 
