@@ -1,0 +1,17 @@
+# Secrets
+.env
+
+# Local Claude Code settings (machine-specific)
+.claude/settings.local.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Runtime-generated data
+signals/
+logs/
+Dependencies/
+output_*.txt
+trade_output.txt
