@@ -65,7 +65,24 @@ class MarketAnalyzer:
         orb_high=float(orb["high"].max())
         orb_low=float(orb["low"].min())
 
-        move=df["close"].iloc[-1]-df["close"].iloc[-10]
+        # Recent 3-candle average vs. the 3 candles right before it (last
+        # ~30 min, today only) instead of a single now-vs-10-candles-ago
+        # point delta. A single distant anchor point can sit right at a
+        # swing low/high from earlier in the session, making "momentum"
+        # read as a recovery off that stale extreme rather than what price
+        # is actually doing right now - averaging both sides smooths that
+        # out. Also scopes to today's candles only, matching VWAP/PDH/ORB
+        # below (the old version could reach into a prior day's candle
+        # early in the session).
+        today_closes = today_rows["close"].tolist()
+
+        if len(today_closes) >= 6:
+            recent_avg = sum(today_closes[-3:]) / 3
+            prior_avg = sum(today_closes[-6:-3]) / 3
+            move = recent_avg - prior_avg
+        else:
+            move = 0.0
+
         momentum="SIDEWAYS"
         if move>40: momentum="STRONG_BULLISH"
         elif move>15: momentum="BULLISH"

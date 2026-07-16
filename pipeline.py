@@ -144,6 +144,19 @@ def confirm_with_ai(market, option_result, decision):
     if engine_recommendation not in ("BUY CALL", "BUY PUT"):
         return decision, None
 
+    # A BUY proposal with no confirmed breakout (short or long window) has
+    # never once been confirmed live - it's always rejected for the same
+    # reason (sideways phase, no real trigger). Skip the paid API call and
+    # go straight to WAIT instead of paying to hear "reject" again.
+    if not market.get("price_action", {}).get("is_breakout"):
+
+        decision["recommendation"] = "WAIT"
+        decision["reasons"].append(
+            "No confirmed breakout - skipped AI call (would reject), downgraded to WAIT"
+        )
+
+        return decision, None
+
     try:
         advice = AIAdvisor().get_advice(market, option_result, decision)
 

@@ -1,7 +1,10 @@
 from dotenv import load_dotenv
 import os
 
-load_dotenv()
+# override=True: a stale DHAN_ACCESS_TOKEN/DHAN_CLIENT_ID set as an actual
+# Windows environment variable would otherwise silently win over .env,
+# since load_dotenv() doesn't overwrite existing env vars by default.
+load_dotenv(override=True)
 
 # Dhan
 DHAN_CLIENT_ID = os.getenv("DHAN_CLIENT_ID")

@@ -38,7 +38,12 @@ class AIAdvisor:
                 "breakout_direction": price_action.get("breakout_direction"),
                 "is_pullback": price_action.get("is_pullback"),
                 "is_exhausted": price_action.get("is_exhausted"),
-                "move": price_action.get("move")
+                "move": price_action.get("move"),
+                # Oldest -> newest 1-min closes, ~last 15 minutes. Derived
+                # labels above (phase/is_breakout) come from short + long
+                # lookback windows and can still miss a slow grind - use
+                # this raw series to judge trend persistence yourself.
+                "recent_1min_closes": price_action.get("recent_closes")
             },
 
             "option_chain": {
@@ -97,6 +102,7 @@ IMPORTANT RULES
    - Is selected_trade a sensible instrument for this direction (ATM/OTM for leverage) rather than deep-in-the-money (mostly intrinsic value, poor leverage)?
    - Is there enough room to the opposing support/resistance level for the trade to work before price likely reacts there?
    - Do the momentum/short-term-momentum/OI signals genuinely agree with the proposed direction, or are they mixed/contradictory?
+   - Look at price_action.recent_1min_closes yourself: even if phase/is_breakout read SIDEWAYS/false (a short-window artifact), a clear sustained drift across those closes in the proposed direction is real support for the trade - don't dismiss a setup as "just chop" if the raw closes actually show a persistent grind.
 8. Set Verdict to CONFIRM only if the setup holds up under this scrutiny and you would genuinely take the trade as described.
 9. Set Verdict to REJECT if anything above is unconvincing, inconsistent, or too risky - explain why in Risk/Reasoning.
 

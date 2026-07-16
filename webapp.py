@@ -16,7 +16,6 @@ import pandas as pd
 import streamlit as st
 
 from pipeline import analyze, confirm_with_ai
-from ai.advisor import AIAdvisor
 import signal_store
 import run_logger
 
@@ -77,26 +76,23 @@ if should_run:
 
             advice = None
 
-            if call_ai and engine_recommendation in ("BUY CALL", "BUY PUT"):
-                # A BUY only becomes final if Claude's independent review
-                # confirms it - confirm_with_ai downgrades to WAIT otherwise.
-                with st.spinner("Asking Claude to confirm the signal..."):
-                    decision, advice = confirm_with_ai(market, option_result, decision)
+            # Claude is only ever consulted for an actual BUY CALL/PUT
+            # proposal - WAIT/WATCH cycles never call the API, since there's
+            # no trade to confirm/reject and narrating them was pure cost
+            # with no decision-relevant payoff.
+            if engine_recommendation in ("BUY CALL", "BUY PUT"):
 
-            elif call_ai:
-                with st.spinner("Asking Claude to narrate..."):
-                    try:
-                        advice = AIAdvisor().get_advice(market, option_result, decision)["text"]
-                        decision["ai_narrative"] = advice
-                    except Exception as ex:
-                        advice = f"Claude error: {ex}"
-
-            elif engine_recommendation in ("BUY CALL", "BUY PUT"):
-                # AI confirmation disabled - an unreviewed BUY can't be final.
-                decision["engine_recommendation"] = engine_recommendation
-                decision["recommendation"] = "WAIT"
-                decision["ai_verdict"] = None
-                decision["reasons"].append("AI confirmation disabled - downgraded to WAIT")
+                if call_ai:
+                    # A BUY only becomes final if Claude's independent review
+                    # confirms it - confirm_with_ai downgrades to WAIT otherwise.
+                    with st.spinner("Asking Claude to confirm the signal..."):
+                        decision, advice = confirm_with_ai(market, option_result, decision)
+                else:
+                    # AI confirmation disabled - an unreviewed BUY can't be final.
+                    decision["engine_recommendation"] = engine_recommendation
+                    decision["recommendation"] = "WAIT"
+                    decision["ai_verdict"] = None
+                    decision["reasons"].append("AI confirmation disabled - downgraded to WAIT")
 
             if advice is not None:
                 signal_store.write_last_advice(advice)

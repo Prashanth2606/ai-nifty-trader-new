@@ -5,6 +5,14 @@ import pandas as pd
 class PriceActionAnalyzer:
     """
     Detects market phase using 1-minute candles.
+
+    Uses two lookback windows, not one: a short 5-candle (~5 min) window
+    that catches fast/sharp moves, and a longer 15-candle (~15 min) window
+    that catches slower, grinding trends which never show up as a big move
+    in any single 5-minute slice (a sustained ~1-2 pt/min decline can spend
+    the whole session under the short window's threshold while still adding
+    up to a genuine, tradeable move over 15 minutes). Both windows can fire
+    is_breakout/phase independently; either is enough.
     """
 
     def analyze(self, candles):
@@ -23,14 +31,33 @@ class PriceActionAnalyzer:
                 "is_breakout": False,
                 "breakout_direction": None,
                 "is_pullback": False,
-                "is_exhausted": False
+                "is_exhausted": False,
+                "recent_closes": [round(c, 2) for c in closes]
             }
 
         last = closes[-1]
 
-        previous5 = closes[-6]
+        # -----------------------
+        # Short window (~5 min) - fast/sharp moves
+        # -----------------------
 
-        move = last - previous5
+        short_move = last - closes[-6]
+        short_high = max(highs[-6:-1])
+        short_low = min(lows[-6:-1])
+
+        # -----------------------
+        # Long window (~15 min, or as much as is available) - slower,
+        # sustained grinds that the short window alone would miss
+        # -----------------------
+
+        long_span = min(16, len(closes))
+        long_move = last - closes[-long_span]
+        long_high = max(highs[-long_span:-1])
+        long_low = min(lows[-long_span:-1])
+
+        # The larger-magnitude reading drives phase classification, so a
+        # fast 5-min spike and a slow 15-min grind both register.
+        move = short_move if abs(short_move) >= abs(long_move) else long_move
 
         phase = "SIDEWAYS"
 
@@ -40,7 +67,7 @@ class PriceActionAnalyzer:
         exhausted = False
 
         # -----------------------
-        # Early Uptrend
+        # Early Uptrend / Downtrend
         # -----------------------
 
         if move > 20:
@@ -52,19 +79,15 @@ class PriceActionAnalyzer:
             phase = "EARLY_DOWNTREND"
 
         # -----------------------
-        # Breakout
+        # Breakout (either window)
         # -----------------------
 
-        recent_high = max(highs[-6:-1])
-
-        recent_low = min(lows[-6:-1])
-
-        if last > recent_high:
+        if last > short_high or last > long_high:
 
             breakout = True
             breakout_direction = "UP"
 
-        if last < recent_low:
+        if last < short_low or last < long_low:
 
             breakout = True
             breakout_direction = "DOWN"
@@ -109,6 +132,10 @@ class PriceActionAnalyzer:
 
             "is_exhausted": exhausted,
 
-            "entry_quality": quality
+            "entry_quality": quality,
+
+            # Raw recent closes so the AI advisor can see the actual shape
+            # of the last ~15 minutes, not just these derived labels.
+            "recent_closes": [round(c, 2) for c in closes[-15:]]
 
         }
