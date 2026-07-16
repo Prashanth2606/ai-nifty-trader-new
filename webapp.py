@@ -208,7 +208,14 @@ else:
 
 advice = signal_store.read_last_advice()
 if advice:
+    advice_time = signal_store.read_last_advice_time()
     st.subheader("AI Advisor (Claude)")
+    if advice_time:
+        st.caption(
+            f"Last checked by Claude at {advice_time} - Claude is only consulted "
+            f"when the engine proposes an actual BUY CALL/PUT, so this may be from "
+            f"an earlier cycle than the live snapshot above."
+        )
     st.markdown(advice)
 
 # --------------------------------------------------------------------

@@ -14,7 +14,7 @@ import csv
 import glob
 import json
 import os
-from datetime import date
+from datetime import date, datetime
 
 SIGNALS_DIR = "signals"
 STATE_FILE = os.path.join(SIGNALS_DIR, ".state.json")
@@ -115,5 +115,12 @@ def read_last_advice():
     return _read_state().get("last_advice")
 
 
+def read_last_advice_time():
+    return _read_state().get("last_advice_time")
+
+
 def write_last_advice(advice):
-    _write_state(last_advice=advice)
+    _write_state(
+        last_advice=advice,
+        last_advice_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    )
