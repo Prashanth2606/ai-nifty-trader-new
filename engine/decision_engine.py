@@ -209,19 +209,14 @@ class DecisionEngine:
         # ------------------------
 
         score = bullish - bearish
-        
-        # ------------------------
-        # Entry Quality Filter
-        # ------------------------
 
-        if is_exhausted:
-
-            if score >= 8:
-                score = 5
-
-            elif score <= -8:
-                score = -5
-
+        # Note: is_exhausted no longer compresses score here (that fully
+        # blocked BUY CALL/PUT from ever firing, including on a move that's
+        # exhausted-looking by raw magnitude but genuinely continuing, not
+        # about to snap back - see the 2026-07-22 09:29 PUT that kept
+        # falling another ~35pts past both targets while suppressed this
+        # way). It's applied as a confidence cap below instead, so Claude
+        # still gets consulted rather than the engine silently sitting out.
 
         # Strong short-term momentum deserves extra weight
         if short_term_momentum == "STRONG_BULLISH":
@@ -304,6 +299,102 @@ class DecisionEngine:
                 confidence = "MEDIUM"
 
         # ------------------------
+        # 1-Min Momentum Agreement Gate
+        # ------------------------
+        # Trend/EMA/VWAP/OI structure alone can carry the score past the
+        # BUY threshold even while the live 1-min tape is flat or moving
+        # the other way (seen live on 2026-07-17 11:12: PCR/STRONG_PUT_WRITING
+        # pushed score to 8 for a BUY CALL while short_term_momentum was
+        # BEARISH). Require the 1-min momentum to actually agree with the
+        # proposed direction, otherwise downgrade to WAIT - this is a hard
+        # requirement, not just a score nudge, so it doesn't depend on some
+        # unrelated gate (like the breakout flag) coincidentally catching it.
+
+        if recommendation == "BUY CALL" and short_term_momentum not in ("BULLISH", "STRONG_BULLISH"):
+
+            reasons.append(
+                f"1-min momentum ({short_term_momentum}) does not confirm BUY CALL - downgraded to WAIT"
+            )
+            recommendation = "WAIT"
+            confidence = "MEDIUM"
+            selected_trade = None
+
+        elif recommendation == "BUY PUT" and short_term_momentum not in ("BEARISH", "STRONG_BEARISH"):
+
+            reasons.append(
+                f"1-min momentum ({short_term_momentum}) does not confirm BUY PUT - downgraded to WAIT"
+            )
+            recommendation = "WAIT"
+            confidence = "MEDIUM"
+            selected_trade = None
+
+        # ------------------------
+        # Room-to-Target Gate
+        # ------------------------
+        # target_1 below is set to the resistance/support level itself. If
+        # price has already run up (or down) to within a few points of that
+        # level, target_1 ends up almost equal to entry - and target_2,
+        # derived from the entry-to-target_1 distance, collapses just as
+        # badly (seen live on 2026-07-17 11:22: price 24249.1 vs resistance
+        # 24250 gave a "target" 0.9 points away against a 49-point stop).
+        # Reuse the same 10-point near-resistance/near-support threshold
+        # already used for scoring above as a hard block - a target that
+        # close isn't a real profit objective.
+
+        if recommendation == "BUY CALL" and resistance is not None and (resistance - price) <= 10:
+
+            reasons.append(
+                f"Only {round(resistance - price, 2)} pts of room to resistance ({resistance}) "
+                f"- target too close to be a real objective, downgraded to WAIT"
+            )
+            recommendation = "WAIT"
+            confidence = "MEDIUM"
+            selected_trade = None
+
+        elif recommendation == "BUY PUT" and support is not None and (price - support) <= 10:
+
+            reasons.append(
+                f"Only {round(price - support, 2)} pts of room to support ({support}) "
+                f"- target too close to be a real objective, downgraded to WAIT"
+            )
+            recommendation = "WAIT"
+            confidence = "MEDIUM"
+            selected_trade = None
+
+        # ------------------------
+        # Stop-Loss Buffer Gate
+        # ------------------------
+        # stop_loss for BUY CALL is set to support, for BUY PUT to resistance
+        # (see below) - if price is already sitting almost on top of that
+        # level, the SL ends up with near-zero buffer and the trade gets
+        # stopped out by ordinary noise almost immediately, regardless of how
+        # good the directional score looks (seen live on 2026-07-20 11:37:
+        # BUY PUT with resistance 24200 vs price 24199.75, a 0.25-point stop -
+        # AI advisor rejected it for exactly this). Threshold is wider than
+        # the 10-point target-room gate above since the 1-min tape routinely
+        # shows 5-8 point bounces, per that same rejection's reasoning.
+
+        if recommendation == "BUY CALL" and support is not None and (price - support) <= 15:
+
+            reasons.append(
+                f"Only {round(price - support, 2)} pts of stop-loss buffer to support ({support}) "
+                f"- stop too tight, downgraded to WAIT"
+            )
+            recommendation = "WAIT"
+            confidence = "MEDIUM"
+            selected_trade = None
+
+        elif recommendation == "BUY PUT" and resistance is not None and (resistance - price) <= 15:
+
+            reasons.append(
+                f"Only {round(resistance - price, 2)} pts of stop-loss buffer to resistance ({resistance}) "
+                f"- stop too tight, downgraded to WAIT"
+            )
+            recommendation = "WAIT"
+            confidence = "MEDIUM"
+            selected_trade = None
+
+        # ------------------------
         # Stop Loss / Targets (underlying Nifty levels)
         # ------------------------
         # Computed deterministically here so there's one authoritative
@@ -356,6 +447,14 @@ class DecisionEngine:
                 f"Confidence capped by entry quality ({entry_quality})"
             )
 
+            if is_exhausted:
+                confidence = cap_confidence(
+                    confidence, "MEDIUM",
+                    "Trend Exhausted (large recent move) - confidence downgraded, "
+                    "not blocked, since a large move can still be a genuine "
+                    "continuation rather than about to snap back"
+                )
+
             if phase == "SIDEWAYS" and not is_breakout:
                 confidence = cap_confidence(
                     confidence, "MEDIUM",
@@ -373,6 +472,51 @@ class DecisionEngine:
                     confidence, "MEDIUM",
                     "Thin room to resistance - confidence downgraded"
                 )
+
+            # PCR/OI can point the opposite way of the trade direction - e.g.
+            # Strong Bullish PCR + PUT_WRITING at the exact strike being
+            # traded typically means option writers are defending that level
+            # as support, which contradicts a BUY PUT breakdown thesis right
+            # at that level (seen live on 2026-07-20 11:36-11:37: PCR
+            # 1.20-1.21 + PUT_WRITING on both rejected BUY PUT proposals).
+            # The aggregate score already nets these against the opposing
+            # direction, but nothing previously capped confidence when they
+            # specifically contradict the strike actually being traded.
+            pcr_bullish = pcr >= 1.05 or signal in ("PUT_WRITING", "STRONG_PUT_WRITING")
+            pcr_bearish = pcr <= 0.95 or signal in ("CALL_WRITING", "STRONG_CALL_WRITING")
+
+            if recommendation == "BUY PUT" and pcr_bullish:
+                confidence = cap_confidence(
+                    confidence, "MEDIUM",
+                    "PCR/OI signal is bullish - contradicts BUY PUT, confidence downgraded"
+                )
+
+            elif recommendation == "BUY CALL" and pcr_bearish:
+                confidence = cap_confidence(
+                    confidence, "MEDIUM",
+                    "PCR/OI signal is bearish - contradicts BUY CALL, confidence downgraded"
+                )
+
+            # is_breakout is direction-agnostic (true for either an up or a
+            # down break), so entry_quality can read HIGH off a breakout
+            # that actually points the opposite way from this trade - e.g.
+            # a BUY CALL proposed while price just broke DOWN out of its
+            # range. That contradiction doesn't affect score (the breakout
+            # scoring above already only credits the matching direction)
+            # but it did let confidence stay HIGH with nothing to catch it.
+            if is_breakout and breakout_direction is not None:
+
+                if recommendation == "BUY CALL" and breakout_direction == "DOWN":
+                    confidence = cap_confidence(
+                        confidence, "MEDIUM",
+                        "Breakout direction (DOWN) contradicts BUY CALL - confidence downgraded"
+                    )
+
+                elif recommendation == "BUY PUT" and breakout_direction == "UP":
+                    confidence = cap_confidence(
+                        confidence, "MEDIUM",
+                        "Breakout direction (UP) contradicts BUY PUT - confidence downgraded"
+                    )
 
         return {
 

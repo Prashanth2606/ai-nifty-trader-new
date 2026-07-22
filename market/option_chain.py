@@ -1,4 +1,5 @@
 from broker.dhan_client import get_dhan_client, call_with_retry
+import config
 
 
 class OptionChain:
@@ -12,7 +13,7 @@ class OptionChain:
             self.dhan.option_chain,
             under_security_id=13,
             under_exchange_segment="IDX_I",
-            expiry="2026-07-21"
+            expiry=config.EXPIRY
         )
 
     def get_atm_strike(self, chain, spot_price):

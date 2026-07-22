@@ -51,7 +51,14 @@ class AIAdvisor:
                 "oi_signal": decision.get("oi_signal"),
                 "support": decision.get("support"),
                 "resistance": decision.get("resistance"),
-                "atm": option_chain.get("atm")
+                "atm": option_chain.get("atm"),
+                # Raw net OI-change magnitude across the nearby strikes
+                # (not just the derived NEUTRAL/CALL_WRITING/PUT_WRITING
+                # label) - a big divergence here is real conviction even
+                # when the categorical signal reads NEUTRAL, e.g. early in
+                # a session before writers have fully repositioned.
+                "total_ce_change_oi": option_chain.get("total_ce_change"),
+                "total_pe_change_oi": option_chain.get("total_pe_change")
             },
 
             "decision": {
@@ -94,7 +101,10 @@ IMPORTANT RULES
 4. decision.stop_loss/target_1/target_2 (on the underlying Nifty index, not the option premium)
    are already computed - if recommendation is BUY CALL or BUY PUT, use these exact numbers for
    Stop Loss/Target 1/Target 2 verbatim. Do not calculate or invent your own levels. If a value
-   is null, write "Not Available".
+   is null, write "Not Available". Note: target_1 is set to the nearest support/resistance level;
+   target_2 is deliberately a measured move PAST that level (same distance again), on the premise
+   that a level breaking at all often means price continues by a similar distance - target_2 sitting
+   beyond target_1 is intentional design, not an inconsistency, so don't flag it as contradictory.
 5. Keep the narration concise (within 250 words).
 6. If recommendation is WAIT, explain exactly what confirmation is needed before entering, and set Verdict to N/A.
 7. If recommendation is BUY CALL or BUY PUT, scrutinize the setup like a trader would before risking capital, specifically:
@@ -103,8 +113,9 @@ IMPORTANT RULES
    - Is there enough room to the opposing support/resistance level for the trade to work before price likely reacts there?
    - Do the momentum/short-term-momentum/OI signals genuinely agree with the proposed direction, or are they mixed/contradictory?
    - Look at price_action.recent_1min_closes yourself: even if phase/is_breakout read SIDEWAYS/false (a short-window artifact), a clear sustained drift across those closes in the proposed direction is real support for the trade - don't dismiss a setup as "just chop" if the raw closes actually show a persistent grind.
-8. Set Verdict to CONFIRM only if the setup holds up under this scrutiny and you would genuinely take the trade as described.
-9. Set Verdict to REJECT if anything above is unconvincing, inconsistent, or too risky - explain why in Risk/Reasoning.
+   - option_chain.oi_signal can read NEUTRAL early in a session (or right after a fast news-driven move) simply because option writers haven't repositioned yet, not because there's genuinely no conviction. Check total_ce_change_oi/total_pe_change_oi directly - a real lopsided skew there (even under a NEUTRAL label) is meaningful confirmation; don't treat a NEUTRAL label alone as disqualifying without checking the raw numbers behind it.
+8. Weigh the checks above holistically, not as a checklist where any single imperfection is disqualifying - real trades almost never look perfect on every axis. Set Verdict to CONFIRM if the setup is favorable on balance: the core direction is genuinely supported by multiple signals (price action, momentum, OI) and you would take the trade, even if one secondary factor (e.g. a tight-but-workable risk:reward, a slightly early OI read) isn't ideal.
+9. Set Verdict to REJECT only when the setup is unfavorable on balance - multiple compounding red flags, or a fundamental contradiction in direction (e.g. price action and OI genuinely pointing opposite ways, not just one being neutral). Explain the specific reasons in Risk/Reasoning either way.
 
 JSON
 
