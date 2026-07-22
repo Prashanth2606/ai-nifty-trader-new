@@ -350,8 +350,10 @@ if position is not None:
                 f"once one fires."
             )
             st.caption(
-                "⚠️ Exiting manually below places a separate sell order without cancelling those "
-                "resting legs - check Dhan directly first to avoid a duplicate order."
+                "Exiting manually below cancels those resting legs first, then places the "
+                "square-off sell - if the legs can't be confidently identified/cancelled, the "
+                "exit is refused rather than risking a duplicate order (check Dhan's app "
+                "directly in that case)."
             )
 
         if st.button("Exit Now (manual)"):

@@ -348,6 +348,7 @@ def approve_entry(position):
             entry_order_id=result["order_id"],
             entry_price=result["price"],
             entry_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            exit_managed_by_broker=result.get("exit_managed_by_broker", False),
         )
 
     return position_store.transition(
@@ -355,6 +356,7 @@ def approve_entry(position):
         security_id=result["security_id"],
         entry_order_id=result["order_id"],
         entry_order_placed_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        exit_managed_by_broker=result.get("exit_managed_by_broker", False),
     )
 
 

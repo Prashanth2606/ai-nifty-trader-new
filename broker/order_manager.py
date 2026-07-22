@@ -104,6 +104,21 @@ def get_option_ltp(strike, option_type):
 
 
 def place_entry_order(position):
+    """
+    Live mode places a Bracket Order (BO) - one order that gives Dhan the
+    entry plus config.BO_STOP_LOSS_POINTS/BO_PROFIT_POINTS as resting child
+    legs it manages itself from the moment entry fills, instead of relying
+    on this app polling price and you clicking Approve Exit (previously this
+    placed a plain product_type=INTRA MARKET order with no SL/target
+    attached at all - config.py already had the BO_* settings for this, but
+    nothing actually used them until now; SL/target had to be added by hand
+    in Dhan's own UI, seen live on 2026-07-22).
+
+    BO requires a LIMIT entry (not MARKET) per Dhan's own constraints - the
+    current LTP is used as that limit price. Returns exit_managed_by_broker
+    so callers know the resting legs, not this app's own monitor loop, are
+    what will actually close the trade.
+    """
 
     security_id, _ = _security_id_and_lot_size(position)
 
@@ -113,7 +128,11 @@ def place_entry_order(position):
             "order_id": f"PAPER-{uuid.uuid4()}",
             "security_id": security_id,
             "price": position["decision_snapshot"]["premium"],
+            "exit_managed_by_broker": False,
         }
+
+    option_type = "CE" if position["direction"] == "CALL" else "PE"
+    entry_price = get_option_ltp(position["strike"], option_type)
 
     response = call_with_retry(
         get_dhan_client().place_order,
@@ -121,11 +140,13 @@ def place_entry_order(position):
         exchange_segment=dhanhq.FNO,
         transaction_type=dhanhq.BUY,
         quantity=config.LOT_SIZE,
-        order_type=dhanhq.MARKET,
-        product_type=dhanhq.INTRA,
-        price=0,
+        order_type=dhanhq.LIMIT,
+        product_type=config.BO_PRODUCT_TYPE,
+        price=entry_price,
         trigger_price=0,
         validity=dhanhq.DAY,
+        bo_profit_value=config.BO_PROFIT_POINTS,
+        bo_stop_loss_Value=config.BO_STOP_LOSS_POINTS,
     )
 
     print(f"Dhan place_order (ENTRY) response: {response}")
@@ -139,12 +160,73 @@ def place_entry_order(position):
         "order_id": _extract_order_id(response),
         "security_id": security_id,
         "price": None,
+        "exit_managed_by_broker": True,
     }
+
+
+class BoLegCancelError(Exception):
+    """Couldn't confidently identify/cancel a BO position's resting target/
+    stop-loss legs before a manual exit - deliberately fatal (see
+    cancel_bo_legs) rather than proceeding to place a square-off sell
+    alongside legs that might still be resting, which could double-sell."""
+
+
+def cancel_bo_legs(security_id):
+    """
+    Cancels the resting TARGET/STOP_LOSS child legs of a Bracket Order
+    position before a manual exit - without this, a manual square-off sell
+    placed alongside still-resting legs could fill twice (the manual sell
+    plus whichever leg fires first), leaving a naked short.
+
+    CAUTION - unverified assumption: Dhan's get_order_list() response is
+    assumed to include a "legName" field (matching modify_order's leg_name
+    parameter) with values including "TARGET_LEG"/"STOP_LOSS_LEG" for a BO
+    order's child legs, and "PENDING"/"TRANSIT"/"OPEN"-ish statuses for
+    still-resting ones - not confirmed against a live BO order's actual
+    response shape. If no matching pending leg is found for this
+    security_id at all, this raises rather than silently assuming there's
+    nothing to cancel - on a real-money exit path, failing loud and forcing
+    a manual check in Dhan's own UI is far safer than guessing wrong.
+    """
+
+    response = call_with_retry(get_dhan_client().get_order_list)
+
+    if response.get("status") != "success":
+        raise BoLegCancelError(f"Could not fetch order list to find BO legs: {response}")
+
+    terminal = {"TRADED", "EXECUTED", "REJECTED", "CANCELLED", "EXPIRED"}
+
+    legs = [
+        row for row in (response.get("data") or [])
+        if str(row.get("securityId")) == str(security_id)
+        and str(row.get("legName", "")).upper() in ("TARGET_LEG", "STOP_LOSS_LEG")
+        and str(row.get("orderStatus", "")).upper() not in terminal
+    ]
+
+    if not legs:
+        raise BoLegCancelError(
+            f"No resting TARGET_LEG/STOP_LOSS_LEG order found for security_id={security_id} "
+            f"- refusing to place a manual exit without confirming the resting legs are gone. "
+            f"Check Dhan's own app directly: if the legs are already cancelled/filled, this "
+            f"position may already be closed; if they're still resting, cancel them there "
+            f"before retrying here."
+        )
+
+    for leg in legs:
+        cancel_response = call_with_retry(get_dhan_client().cancel_order, leg["orderId"])
+        print(f"Dhan cancel_order (BO {leg.get('legName')}) response: {cancel_response}")
+        if cancel_response.get("status") != "success":
+            raise BoLegCancelError(
+                f"Failed to cancel BO {leg.get('legName')} order {leg['orderId']}: {cancel_response}"
+            )
 
 
 def place_exit_order(position):
     """Reuses the security_id already resolved and stored on the position at
-    entry time - no need to re-resolve it."""
+    entry time - no need to re-resolve it. For a broker-managed (BO)
+    position, cancels the resting target/stop-loss legs first (see
+    cancel_bo_legs) so this square-off can't collide with one of them
+    filling independently."""
 
     security_id = position["security_id"]
 
@@ -163,6 +245,9 @@ def place_exit_order(position):
             "security_id": security_id,
             "price": exit_price,
         }
+
+    if position.get("exit_managed_by_broker"):
+        cancel_bo_legs(security_id)
 
     response = call_with_retry(
         get_dhan_client().place_order,
