@@ -14,6 +14,12 @@ from datetime import date, datetime
 LOGS_DIR = "logs"
 ORDER_ERROR_LOG = os.path.join(LOGS_DIR, "order_errors.log")
 AI_ERROR_LOG = os.path.join(LOGS_DIR, "ai_advisor_errors.log")
+ORDER_AUDIT_LOG = os.path.join(LOGS_DIR, "order_audit.csv")
+
+ORDER_AUDIT_FIELDNAMES = [
+    "time", "action", "correlation_id", "instrument", "direction", "mode",
+    "quantity", "security_id", "order_id", "status",
+]
 
 FIELDNAMES = [
     "time", "engine_recommendation", "ai_verdict", "final_recommendation",
@@ -120,6 +126,45 @@ def log_order_response(action, position, response):
             f"instrument={position.get('instrument')} mode={position.get('mode')} "
             f"raw_response={response}\n"
         )
+
+
+def log_order_execution(action, position, order_id, status):
+    """
+    Appends one row to logs/order_audit.csv every time an order is actually
+    submitted to Dhan's API (ENTRY/EXIT/CANCEL_BO_LEG) and accepted (a
+    recognizable order_id was returned) - a clean, permanent, structured
+    record for regulatory/audit traceability, complementing:
+    - log_order_response above, which keeps the full raw response text but
+      isn't easily queryable/reportable;
+    - position/closed_trades.csv, which has one row per completed position
+      rather than one row per individual order call (a position can span
+      several order calls - e.g. a cancelled stale entry retried, or BO
+      legs cancelled before a manual exit).
+    Never called for paper mode - see call sites in broker/order_manager.py -
+    since paper mode never actually calls Dhan's API at all.
+    """
+
+    row = {
+        "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "action": action,
+        "correlation_id": position.get("correlation_id"),
+        "instrument": position.get("instrument"),
+        "direction": position.get("direction"),
+        "mode": position.get("mode"),
+        "quantity": position.get("quantity"),
+        "security_id": position.get("security_id"),
+        "order_id": order_id,
+        "status": status,
+    }
+
+    os.makedirs(LOGS_DIR, exist_ok=True)
+    is_new = not os.path.exists(ORDER_AUDIT_LOG)
+
+    with open(ORDER_AUDIT_LOG, "a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=ORDER_AUDIT_FIELDNAMES)
+        if is_new:
+            writer.writeheader()
+        writer.writerow(row)
 
 
 def log_order_error(action, position, ex):

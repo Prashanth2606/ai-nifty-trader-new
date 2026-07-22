@@ -24,7 +24,8 @@ HISTORY_FILE = os.path.join(POSITION_DIR, "closed_trades.csv")
 
 HISTORY_FIELDNAMES = [
     "closed_at", "correlation_id", "direction", "instrument", "mode",
-    "quantity", "entry_price", "entry_time", "exit_price", "exit_time",
+    "quantity", "security_id", "entry_order_id", "entry_price", "entry_time",
+    "exit_order_id", "exit_price", "exit_time",
     "exit_reason", "pnl_per_unit", "pnl_total",
 ]
 
@@ -158,8 +159,15 @@ def close_position(position, exit_price, exit_reason):
         "instrument": position.get("instrument"),
         "mode": position.get("mode"),
         "quantity": quantity,
+        # Dhan's own order/security IDs, kept on the permanent record for
+        # audit-trail traceability back to the broker's own order book -
+        # previously only lived in position/state.json while a position was
+        # open and got dropped the moment it closed.
+        "security_id": position.get("security_id"),
+        "entry_order_id": position.get("entry_order_id"),
         "entry_price": entry_price,
         "entry_time": position.get("entry_time"),
+        "exit_order_id": position.get("exit_order_id"),
         "exit_price": exit_price,
         "exit_time": _now(),
         "exit_reason": exit_reason,

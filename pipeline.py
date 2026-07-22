@@ -448,6 +448,7 @@ def approve_exit(position):
         return position_store.read_position()
 
     if result["filled"]:
+        locked["exit_order_id"] = result["order_id"]
         position_store.close_position(
             locked, exit_price=result["price"],
             exit_reason=locked.get("exit_reason") or "MANUAL_EXIT",

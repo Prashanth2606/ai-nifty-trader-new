@@ -155,9 +155,12 @@ def place_entry_order(position):
     if response.get("status") != "success":
         raise OrderPlacementError(f"Entry order rejected by Dhan: {response}")
 
+    order_id = _extract_order_id(response)
+    run_logger.log_order_execution("ENTRY", position, order_id, status="SUBMITTED")
+
     return {
         "filled": False,
-        "order_id": _extract_order_id(response),
+        "order_id": order_id,
         "security_id": security_id,
         "price": None,
         "exit_managed_by_broker": True,
@@ -171,7 +174,7 @@ class BoLegCancelError(Exception):
     alongside legs that might still be resting, which could double-sell."""
 
 
-def cancel_bo_legs(security_id):
+def cancel_bo_legs(position):
     """
     Cancels the resting TARGET/STOP_LOSS child legs of a Bracket Order
     position before a manual exit - without this, a manual square-off sell
@@ -188,6 +191,8 @@ def cancel_bo_legs(security_id):
     nothing to cancel - on a real-money exit path, failing loud and forcing
     a manual check in Dhan's own UI is far safer than guessing wrong.
     """
+
+    security_id = position["security_id"]
 
     response = call_with_retry(get_dhan_client().get_order_list)
 
@@ -219,6 +224,9 @@ def cancel_bo_legs(security_id):
             raise BoLegCancelError(
                 f"Failed to cancel BO {leg.get('legName')} order {leg['orderId']}: {cancel_response}"
             )
+        run_logger.log_order_execution(
+            f"CANCEL_{leg.get('legName')}", position, leg["orderId"], status="CANCELLED"
+        )
 
 
 def place_exit_order(position):
@@ -247,7 +255,7 @@ def place_exit_order(position):
         }
 
     if position.get("exit_managed_by_broker"):
-        cancel_bo_legs(security_id)
+        cancel_bo_legs(position)
 
     response = call_with_retry(
         get_dhan_client().place_order,
@@ -268,9 +276,12 @@ def place_exit_order(position):
     if response.get("status") != "success":
         raise OrderPlacementError(f"Exit order rejected by Dhan: {response}")
 
+    order_id = _extract_order_id(response)
+    run_logger.log_order_execution("EXIT", position, order_id, status="SUBMITTED")
+
     return {
         "filled": False,
-        "order_id": _extract_order_id(response),
+        "order_id": order_id,
         "security_id": security_id,
         "price": None,
     }
@@ -285,6 +296,9 @@ def cancel_order(position, order_id):
 
     print(f"Dhan cancel_order response: {response}")
     run_logger.log_order_response("CANCEL", position, response)
+
+    if response.get("status") == "success":
+        run_logger.log_order_execution("CANCEL_ENTRY", position, order_id, status="CANCELLED")
 
     return response
 
