@@ -47,6 +47,15 @@ BO_PROFIT_POINTS = 30
 # already passed.
 ENTRY_ORDER_TIMEOUT_SECONDS = 45
 
+# While a position sits at PENDING_ENTRY_APPROVAL, the app deliberately stops
+# scanning the market entirely (see webapp.py) - so if you step away, nothing
+# re-validates the setup no matter how long the gap. Past this many seconds
+# since created_at, the UI shows a stale-signal warning (seen live on
+# 2026-07-22: a PUT sat pending ~1h45m and price had already reached what was
+# supposed to be Target 1, at a materially worse premium, by the time it was
+# noticed).
+PENDING_ENTRY_STALE_SECONDS = 120
+
 # Safety: only "live" ever calls a real Dhan order-placement endpoint.
 # broker/order_manager.py is the sole module gated by this - set to "paper"
 # for a simulated-fill dry run of the approval/monitoring flow.

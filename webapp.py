@@ -237,6 +237,28 @@ if position is not None:
         )
         st.caption(" · ".join(snap.get("reasons", [])))
 
+        created_at = position.get("created_at")
+
+        if created_at:
+            created_dt = datetime.strptime(created_at, "%Y-%m-%d %H:%M:%S")
+            elapsed_seconds = (datetime.now() - created_dt).total_seconds()
+            minutes, seconds = divmod(int(elapsed_seconds), 60)
+            hours, minutes = divmod(minutes, 60)
+            age = (f"{hours}h {minutes}m ago" if hours else
+                   f"{minutes}m {seconds}s ago" if minutes else
+                   f"{seconds}s ago")
+
+            if elapsed_seconds >= config.PENDING_ENTRY_STALE_SECONDS:
+                st.warning(
+                    f"⚠️ Proposed at **{created_at}** ({age}). The market has NOT been "
+                    f"re-scanned since - this app stops scanning entirely while a position "
+                    f"is pending approval. Price and premium above may no longer reflect "
+                    f"current conditions - verify before approving, or Reject to get a "
+                    f"fresh scan."
+                )
+            else:
+                st.caption(f"Proposed at {created_at} ({age})")
+
         c1, c2 = st.columns(2)
 
         if c1.button("✅ Approve Entry", type="primary"):
