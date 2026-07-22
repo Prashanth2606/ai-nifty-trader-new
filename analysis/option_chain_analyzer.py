@@ -32,6 +32,18 @@ class OptionChainAnalyzer:
             key=lambda x: abs(x["strike"] - spot)
         )["strike"]
 
+        # Directional option buying wants ATM/OTM leverage within realistic
+        # reach of the move, not whatever strike happens to have the most
+        # OI/volume - ce_score/pe_score below only discount distance by 5
+        # points per index-point, which a popular round-number strike's raw
+        # OI-change/volume (routinely in the tens of thousands) swamps
+        # easily. A strike 150+ points past both resistance and target_2 got
+        # picked as "best" this way on 2026-07-17 15:01. Excluding anything
+        # beyond two strikes (100 points) from the ranking pool entirely
+        # keeps the OI/volume score as a tiebreaker among realistic
+        # candidates instead of letting it override proximity outright.
+        MAX_STRIKE_DISTANCE = 100
+
         for row in nearby_strikes:
 
             strike = row["strike"]
@@ -48,55 +60,57 @@ class OptionChainAnalyzer:
 
             distance = abs(strike - atm)
 
-            ce_score = (
-                row["ce_change_oi"] * 0.45
-                + row["ce_volume"] * 0.30
-                - row["ce_ltp"] * 0.10
-                - distance * 5
-            )
+            if distance <= MAX_STRIKE_DISTANCE:
 
-            pe_score = (
-                row["pe_change_oi"] * 0.45
-                + row["pe_volume"] * 0.30
-                - row["pe_ltp"] * 0.10
-                - distance * 5
-            )
+                ce_score = (
+                    row["ce_change_oi"] * 0.45
+                    + row["ce_volume"] * 0.30
+                    - row["ce_ltp"] * 0.10
+                    - distance * 5
+                )
 
-            best_calls.append({
+                pe_score = (
+                    row["pe_change_oi"] * 0.45
+                    + row["pe_volume"] * 0.30
+                    - row["pe_ltp"] * 0.10
+                    - distance * 5
+                )
 
-                "strike": strike,
+                best_calls.append({
 
-                "instrument": f"{int(strike)} CE",
+                    "strike": strike,
 
-                "premium": row["ce_ltp"],
+                    "instrument": f"{int(strike)} CE",
 
-                "score": round(ce_score, 2),
+                    "premium": row["ce_ltp"],
 
-                "oi": row["ce_oi"],
+                    "score": round(ce_score, 2),
 
-                "oi_change": row["ce_change_oi"],
+                    "oi": row["ce_oi"],
 
-                "volume": row["ce_volume"]
+                    "oi_change": row["ce_change_oi"],
 
-            })
+                    "volume": row["ce_volume"]
 
-            best_puts.append({
+                })
 
-                "strike": strike,
+                best_puts.append({
 
-                "instrument": f"{int(strike)} PE",
+                    "strike": strike,
 
-                "premium": row["pe_ltp"],
+                    "instrument": f"{int(strike)} PE",
 
-                "score": round(pe_score, 2),
+                    "premium": row["pe_ltp"],
 
-                "oi": row["pe_oi"],
+                    "score": round(pe_score, 2),
 
-                "oi_change": row["pe_change_oi"],
+                    "oi": row["pe_oi"],
 
-                "volume": row["pe_volume"]
+                    "oi_change": row["pe_change_oi"],
 
-            })
+                    "volume": row["pe_volume"]
+
+                })
 
             # ---------------------------------
             # Support

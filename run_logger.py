@@ -8,9 +8,12 @@ moments a trade was confirmed.
 
 import csv
 import os
+import traceback
 from datetime import date, datetime
 
 LOGS_DIR = "logs"
+ORDER_ERROR_LOG = os.path.join(LOGS_DIR, "order_errors.log")
+AI_ERROR_LOG = os.path.join(LOGS_DIR, "ai_advisor_errors.log")
 
 FIELDNAMES = [
     "time", "engine_recommendation", "ai_verdict", "final_recommendation",
@@ -80,3 +83,59 @@ def log_cycle(market, option_result, decision, engine_recommendation=None):
         if is_new:
             writer.writeheader()
         writer.writerow(row)
+
+
+def log_ai_advisor_error(decision, ex):
+    """Appends the full traceback for a failed Claude advisor call to
+    logs/ai_advisor_errors.log - the CSV cycle log only keeps str(ex) in the
+    reasons column (no traceback), and this is a genuine "we may have missed
+    a good trade" case (unlike the deliberate no-breakout skip in
+    pipeline.py confirm_with_ai, which the UI distinguishes from this)."""
+
+    os.makedirs(LOGS_DIR, exist_ok=True)
+
+    with open(AI_ERROR_LOG, "a", encoding="utf-8") as f:
+        f.write(
+            f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} "
+            f"engine_recommendation={decision.get('recommendation')} "
+            f"instrument={(decision.get('selected_trade') or {}).get('instrument')}\n"
+        )
+        f.write(traceback.format_exc())
+        f.write("-" * 70 + "\n")
+
+
+def log_order_response(action, position, response):
+    """Appends the raw Dhan place_order response - success or failure - to
+    logs/order_errors.log. Some rejections (e.g. RMS margin) don't always
+    surface as a Python exception the same way an API-gateway error does,
+    so this captures the response unconditionally rather than only on the
+    exception path (see log_order_error below)."""
+
+    os.makedirs(LOGS_DIR, exist_ok=True)
+
+    with open(ORDER_ERROR_LOG, "a", encoding="utf-8") as f:
+        f.write(
+            f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} [{action}] "
+            f"correlation_id={position.get('correlation_id')} "
+            f"instrument={position.get('instrument')} mode={position.get('mode')} "
+            f"raw_response={response}\n"
+        )
+
+
+def log_order_error(action, position, ex):
+    """Appends the full traceback for a failed live order placement to
+    logs/order_errors.log. position_store only keeps str(ex) on the position
+    record itself (shown in the UI) - this preserves the traceback and raw
+    exception args (e.g. Dhan's full error dict) for post-mortem debugging,
+    since the UI message alone isn't always the whole picture."""
+
+    os.makedirs(LOGS_DIR, exist_ok=True)
+
+    with open(ORDER_ERROR_LOG, "a", encoding="utf-8") as f:
+        f.write(
+            f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} [{action}] "
+            f"correlation_id={position.get('correlation_id')} "
+            f"instrument={position.get('instrument')} mode={position.get('mode')}\n"
+        )
+        f.write(traceback.format_exc())
+        f.write("-" * 70 + "\n")

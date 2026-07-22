@@ -1,13 +1,18 @@
+from datetime import datetime
 from pprint import pprint
 
 from engine.price_action_analyzer import PriceActionAnalyzer
+from engine.position_monitor import PositionMonitor
 from market.historical_data import HistoricalDataProvider
 from analysis.market_analyzer import MarketAnalyzer
 from analysis.option_chain_analyzer import OptionChainAnalyzer
 from engine.decision_engine import DecisionEngine
 from market.option_chain import OptionChain
+from broker import order_manager
 
 from ai.advisor import AIAdvisor
+import config
+import position_store
 import run_logger
 
 
@@ -162,6 +167,8 @@ def confirm_with_ai(market, option_result, decision):
 
     except Exception as ex:
 
+        run_logger.log_ai_advisor_error(decision, ex)
+
         decision["recommendation"] = "WAIT"
         decision["reasons"].append(f"AI advisor unavailable ({ex}) - downgraded to WAIT")
 
@@ -243,6 +250,234 @@ def run_once(call_ai=True):
     run_logger.log_cycle(market, option_result, decision, engine_recommendation=engine_recommendation)
 
     return decision
+
+
+# --------------------------------------------------------------------
+# Position lifecycle - entry/exit are only ever placed from these
+# functions (via broker.order_manager), and only in response to an
+# explicit approval call from the UI. Nothing here places an order on its
+# own initiative.
+# --------------------------------------------------------------------
+
+def reconcile_external_close(position):
+    """
+    Checks Dhan's actual broker position for an OPEN position's security -
+    catches a position that was closed outside this app, whether by a
+    manually placed order or (the expected path now) Dhan's own Bracket
+    Order SL/target leg firing, since nothing else here would ever notice
+    that on its own. Paper mode has no real broker position to check
+    against, so it's skipped entirely.
+
+    Returns None if the position was found closed and has been reconciled
+    (closed_trades.csv row written, state cleared) - caller should treat
+    this the same as any other "position no longer open" case. Returns the
+    position unchanged if it's still genuinely open on Dhan's side.
+    """
+
+    if position.get("mode") != "live" or not position.get("security_id"):
+        return position
+
+    product_type = position.get("product_type", config.PRODUCT_TYPE)
+    broker_position = order_manager.get_broker_position(position["security_id"], product_type)
+
+    if broker_position is None or broker_position.get("netQty") != 0:
+        return position
+
+    exit_price = broker_position.get("sellAvg") or None
+
+    position_store.close_position(position, exit_price=exit_price, exit_reason="CLOSED_EXTERNALLY")
+
+    return None
+
+
+def monitor_position(position):
+    """
+    Cheap market check for an OPEN position - skips the option-chain scan
+    and AI advisor entirely, since hold/exit only depends on the Nifty
+    index price vs the stop_loss/target_1 frozen into the position at
+    entry-approval time (see engine/position_monitor.py).
+    """
+
+    history = HistoricalDataProvider()
+    candles = history.get_5min_candles()
+    market = MarketAnalyzer().analyze(candles)
+
+    evaluation = PositionMonitor().evaluate(position, market)
+
+    return market, evaluation
+
+
+def get_current_premium(position):
+    """Fresh option LTP for the open position's contract, for live P&L
+    display (mirrors what Dhan's own open-positions table shows) - not used
+    for any order pricing decision here."""
+
+    option_type = "CE" if position["direction"] == "CALL" else "PE"
+    return order_manager.get_option_ltp(position["strike"], option_type)
+
+
+def approve_entry(position):
+    """
+    Places the entry order for a PENDING_ENTRY_APPROVAL position. Returns
+    the resulting position (re-read from disk if a concurrent click already
+    moved it on - in that case no second order is placed).
+    """
+
+    locked = position_store.transition(
+        position, position_store.PENDING_ENTRY_APPROVAL, position_store.ENTRY_SUBMITTING
+    )
+
+    if locked is None:
+        return position_store.read_position()
+
+    try:
+        result = order_manager.place_entry_order(locked)
+
+    except Exception as ex:
+        run_logger.log_order_error("ENTRY", locked, ex)
+        position_store.transition(
+            locked, position_store.ENTRY_SUBMITTING, position_store.ENTRY_ORDER_FAILED,
+            error=str(ex),
+        )
+        return position_store.read_position()
+
+    if result["filled"]:
+        return position_store.transition(
+            locked, position_store.ENTRY_SUBMITTING, position_store.OPEN,
+            security_id=result["security_id"],
+            entry_order_id=result["order_id"],
+            entry_price=result["price"],
+            entry_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        )
+
+    return position_store.transition(
+        locked, position_store.ENTRY_SUBMITTING, position_store.ENTRY_ORDER_PLACED,
+        security_id=result["security_id"],
+        entry_order_id=result["order_id"],
+        entry_order_placed_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    )
+
+
+def cancel_stale_entry(position):
+    """
+    Cancels an entry order that's been sitting unfilled too long
+    (see config.ENTRY_ORDER_TIMEOUT_SECONDS - the UI decides when it's "too
+    long" and only then offers this). Closes the position out entirely
+    (logged to closed_trades.csv as a no-fill, same treatment as a Dismissed
+    ENTRY_ORDER_FAILED) rather than re-approving the same frozen decision at
+    a new price - by this point the market may have moved enough that the
+    original setup (direction, strike, whole thesis) isn't the best read
+    anymore. The next cycle runs analyze() from scratch and can propose a
+    genuinely different trade, not just a re-priced repeat of the old one.
+    """
+
+    order_manager.cancel_order(position, position["entry_order_id"])
+
+    position_store.close_position(position, exit_price=None, exit_reason="CANCELLED_UNFILLED_TIMEOUT")
+
+
+def poll_entry_order(position):
+    """Advances ENTRY_ORDER_PLACED -> OPEN/ENTRY_ORDER_FAILED. Read-only
+    against Dhan, safe to call on every rerun while a live order is pending."""
+
+    result = order_manager.poll_order(position["entry_order_id"])
+
+    if result["status"] == "FILLED":
+        return position_store.transition(
+            position, position_store.ENTRY_ORDER_PLACED, position_store.OPEN,
+            entry_price=result["price"],
+            entry_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        )
+
+    if result["status"] == "FAILED":
+        return position_store.transition(
+            position, position_store.ENTRY_ORDER_PLACED, position_store.ENTRY_ORDER_FAILED,
+            error="Entry order was not filled by Dhan",
+        )
+
+    return position
+
+
+def reject_entry(position):
+    """Declines a pending entry proposal - no order is ever placed for it."""
+
+    position_store.reject_pending_entry(position)
+
+
+def request_exit(position, reason):
+    """Moves OPEN -> PENDING_EXIT_APPROVAL, recording why (stop-loss hit,
+    target hit, or a manual 'Exit Now' click) - this alone never places an
+    order, it only surfaces the Approve Exit / Hold choice in the UI."""
+
+    return position_store.transition(
+        position, position_store.OPEN, position_store.PENDING_EXIT_APPROVAL,
+        exit_reason=reason,
+    )
+
+
+def hold_exit(position):
+    """User chose Hold over an exit recommendation - back to OPEN, will be
+    re-evaluated next cycle."""
+
+    return position_store.transition(
+        position, position_store.PENDING_EXIT_APPROVAL, position_store.OPEN
+    )
+
+
+def approve_exit(position):
+    """Places the exit order for a PENDING_EXIT_APPROVAL position."""
+
+    locked = position_store.transition(
+        position, position_store.PENDING_EXIT_APPROVAL, position_store.EXIT_SUBMITTING
+    )
+
+    if locked is None:
+        return position_store.read_position()
+
+    try:
+        result = order_manager.place_exit_order(locked)
+
+    except Exception as ex:
+        run_logger.log_order_error("EXIT", locked, ex)
+        position_store.transition(
+            locked, position_store.EXIT_SUBMITTING, position_store.EXIT_ORDER_FAILED,
+            error=str(ex),
+        )
+        return position_store.read_position()
+
+    if result["filled"]:
+        position_store.close_position(
+            locked, exit_price=result["price"],
+            exit_reason=locked.get("exit_reason") or "MANUAL_EXIT",
+        )
+        return position_store.read_position()
+
+    return position_store.transition(
+        locked, position_store.EXIT_SUBMITTING, position_store.EXIT_ORDER_PLACED,
+        exit_order_id=result["order_id"],
+    )
+
+
+def poll_exit_order(position):
+    """Advances EXIT_ORDER_PLACED -> closed/EXIT_ORDER_FAILED. Read-only
+    against Dhan, safe to call on every rerun while a live order is pending."""
+
+    result = order_manager.poll_order(position["exit_order_id"])
+
+    if result["status"] == "FILLED":
+        position_store.close_position(
+            position, exit_price=result["price"],
+            exit_reason=position.get("exit_reason") or "MANUAL_EXIT",
+        )
+        return position_store.read_position()
+
+    if result["status"] == "FAILED":
+        return position_store.transition(
+            position, position_store.EXIT_ORDER_PLACED, position_store.EXIT_ORDER_FAILED,
+            error="Exit order was not filled by Dhan",
+        )
+
+    return position
 
 
 if __name__ == "__main__":

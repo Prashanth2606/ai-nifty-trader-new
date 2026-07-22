@@ -12,6 +12,8 @@ __pycache__/
 # Runtime-generated data
 signals/
 logs/
+position/
 Dependencies/
 output_*.txt
 trade_output.txt
+broker/.security_master_cache.csv

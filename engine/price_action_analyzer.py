@@ -13,11 +13,44 @@ class PriceActionAnalyzer:
     the whole session under the short window's threshold while still adding
     up to a genuine, tradeable move over 15 minutes). Both windows can fire
     is_breakout/phase independently; either is enough.
+
+    `candles` is fetched with a multi-day lookback (same feed as the 5-min
+    data), so it's scoped to today before use - otherwise the windows above
+    would silently reach past today's first candle into the previous day's
+    closing prints early in a session. Today's own opening candle is then
+    dropped too: it carries the overnight gap in its open/high/low rather
+    than genuine intraday movement, and including it made the first ~15
+    minutes of every session read as an "exhausted" parabolic move.
     """
+
+    # How many of the most recent candles still count as "just broke out".
+    # A strict last-candle-only check flips back to False on any single
+    # pause candle inside an otherwise live stair-step rally, which starved
+    # the AI-confirmation gate in pipeline.py of real setups for several
+    # minutes at a time. Checking the last few candles keeps a genuine
+    # breakout "live" for a short window instead of flickering every tick.
+    BREAKOUT_PERSIST_CANDLES = 3
+
+    @staticmethod
+    def _trading_day(time_series):
+        """Buckets each candle's raw timestamp into a calendar trading day
+        (see MarketAnalyzer._trading_day for the same logic/rationale)."""
+        try:
+            ts = pd.to_datetime(time_series, unit="s")
+        except (ValueError, TypeError):
+            ts = pd.to_datetime(time_series)
+        return ts.dt.date
 
     def analyze(self, candles):
 
         df = pd.DataFrame(candles)
+
+        if "time" in df.columns and not df.empty:
+            df["trading_day"] = self._trading_day(df["time"])
+            today = df["trading_day"].iloc[-1]
+            df = df[df["trading_day"] == today].reset_index(drop=True)
+            if len(df) > 1:
+                df = df.iloc[1:].reset_index(drop=True)
 
         closes = df["close"].tolist()
         highs = df["high"].tolist()
@@ -79,18 +112,33 @@ class PriceActionAnalyzer:
             phase = "EARLY_DOWNTREND"
 
         # -----------------------
-        # Breakout (either window)
+        # Breakout (either window, persisted over the last few candles -
+        # see BREAKOUT_PERSIST_CANDLES)
         # -----------------------
 
-        if last > short_high or last > long_high:
+        persist_span = min(self.BREAKOUT_PERSIST_CANDLES, len(closes) - 5)
 
-            breakout = True
-            breakout_direction = "UP"
+        for i in range(persist_span):
 
-        if last < short_low or last < long_low:
+            idx = len(closes) - 1 - i
 
-            breakout = True
-            breakout_direction = "DOWN"
+            c = closes[idx]
+            s_hi = max(highs[idx - 5:idx])
+            s_lo = min(lows[idx - 5:idx])
+
+            l_span = min(15, idx)
+            l_hi = max(highs[idx - l_span:idx])
+            l_lo = min(lows[idx - l_span:idx])
+
+            if c > s_hi or c > l_hi:
+                breakout = True
+                breakout_direction = "UP"
+                break
+
+            if c < s_lo or c < l_lo:
+                breakout = True
+                breakout_direction = "DOWN"
+                break
 
         # -----------------------
         # Pullback

@@ -7,8 +7,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 A single-shot (not continuously running) Nifty index options analysis tool. It pulls historical
 index candles and the live option chain from Dhan (Indian broker API), runs them through a
 deterministic rule-based decision engine, and optionally asks Claude to explain (never override)
-the resulting recommendation. There is no backtester, no order placement, and no persistence layer
-— running `app.py` performs one analysis pass and prints results.
+the resulting recommendation. There is no backtester and no automated (unattended) order
+placement — running `app.py` performs one analysis pass and prints results.
+
+`webapp.py` (Streamlit) additionally supports approval-gated order placement: an AI-confirmed
+BUY CALL/PUT becomes a pending position that requires an explicit "Approve Entry" click before any
+order is placed, and an open position's exit (stop-loss/target hit) likewise requires an explicit
+"Approve Exit" click. No order is ever placed without that click — see "Position lifecycle" below.
 
 ## Setup & running
 
@@ -75,9 +80,40 @@ don't try to steer outcomes through the AI advisor prompt.
 
 **Config values requiring manual upkeep**: `config.py`'s `EXPIRY` (option expiry date) must be
 updated weekly to match the current Nifty weekly expiry; `OptionChain.get_raw_chain()` hardcodes
-`expiry="2026-07-14"` directly rather than importing from `config.EXPIRY` — check both when the
+`expiry="2026-07-21"` directly rather than importing from `config.EXPIRY` — check both when the
 expiry changes. `NIFTY_SECURITY_ID` (13) and `EXCHANGE` ("IDX_I") are Dhan-specific constants for
-the Nifty 50 index.
+the Nifty 50 index. `config.py`'s `LOT_SIZE` (65 as of 2026-07-17) must be kept in sync with NSE's
+current Nifty lot size — `broker/order_manager.py` cross-checks it against Dhan's own security
+master at order-placement time and refuses to place an order on a mismatch, but that only catches
+a stale value, it doesn't fix it.
+
+## Position lifecycle / order placement
+
+`webapp.py` is the only place with an order-placement UI (`run_loop.py` stays analysis-only). When
+`DecisionEngine` + Claude confirm a BUY CALL/PUT and no position is already open/pending,
+`position_store.create_pending_entry()` freezes that decision (instrument, premium, stop_loss,
+target_1/2) into a new file-based position record (`position/state.json`) with status
+`PENDING_ENTRY_APPROVAL`. From there:
+
+```
+PENDING_ENTRY_APPROVAL --Approve--> (place order) --> OPEN
+OPEN --stop_loss/target_1 hit (engine/position_monitor.py) or manual "Exit Now"--> PENDING_EXIT_APPROVAL
+PENDING_EXIT_APPROVAL --Approve Exit--> (place order) --> closed (appended to position/closed_trades.csv)
+```
+
+Only `broker/order_manager.py` is allowed to call Dhan's order-placement endpoints
+(`place_order`/`get_order_by_id`), gated by `config.TRADING_MODE` ("live" places real orders;
+"paper" simulates an instant fill at the frozen/current premium and never even constructs an
+authenticated Dhan client). `position_store.transition()` is an atomic compare-and-swap (temp file +
+`os.replace`) that only applies a state change if the on-disk status still matches what the caller
+expects — this is what stops a double-click or an auto-refresh race from placing two orders for one
+approval. `engine/position_monitor.py` deliberately does NOT re-run `DecisionEngine` or call Claude;
+it only checks the live Nifty price against the stop_loss/target_1 frozen in at entry.
+
+`broker/security_master.py` resolves a strike + CE/PE + `config.EXPIRY` to the Dhan `security_id`
+needed to place an order (the option-chain response used elsewhere has no security_id) via Dhan's
+public scrip-master CSV, cached locally (`broker/.security_master_cache.csv`, gitignored) for up to
+`config.SECURITY_MASTER_MAX_AGE_HOURS`.
 
 **`app-Claude.py` is not a variant of `app.py`.** Despite the name, it's a standalone, independently
 runnable OI-unwind polling monitor (infinite loop, ~15s poll interval) built on a different library
