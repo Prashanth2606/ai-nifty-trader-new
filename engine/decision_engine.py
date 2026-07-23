@@ -373,8 +373,21 @@ class DecisionEngine:
         # AI advisor rejected it for exactly this). Threshold is wider than
         # the 10-point target-room gate above since the 1-min tape routinely
         # shows 5-8 point bounces, per that same rejection's reasoning.
+        #
+        # Skipped when short-term momentum is STRONG in the trade's own
+        # direction - a tight buffer against a static option-chain support/
+        # resistance strike is a real whipsaw risk in a range-bound market,
+        # but far less so when price is actively climbing away from that
+        # level under strong momentum (seen live 2026-07-23 10:04-10:10: this
+        # gate held a BUY CALL back for ~5-6 minutes of a genuine, already-
+        # confirmed uptrend purely because price hadn't yet drifted far
+        # enough from a support strike it was already moving away from, not
+        # toward).
 
-        if recommendation == "BUY CALL" and support is not None and (price - support) <= 15:
+        if (
+            recommendation == "BUY CALL" and support is not None
+            and (price - support) <= 15 and short_term_momentum != "STRONG_BULLISH"
+        ):
 
             reasons.append(
                 f"Only {round(price - support, 2)} pts of stop-loss buffer to support ({support}) "
@@ -384,7 +397,10 @@ class DecisionEngine:
             confidence = "MEDIUM"
             selected_trade = None
 
-        elif recommendation == "BUY PUT" and resistance is not None and (resistance - price) <= 15:
+        elif (
+            recommendation == "BUY PUT" and resistance is not None
+            and (resistance - price) <= 15 and short_term_momentum != "STRONG_BEARISH"
+        ):
 
             reasons.append(
                 f"Only {round(resistance - price, 2)} pts of stop-loss buffer to resistance ({resistance}) "
