@@ -355,6 +355,13 @@ if position is not None:
                 "exit is refused rather than risking a duplicate order (check Dhan's app "
                 "directly in that case)."
             )
+        elif position.get("bo_fallback"):
+            st.warning(
+                "⚠️ Dhan rejected the Bracket Order for this entry (likely BO temporarily "
+                "disabled for this contract/segment) - this entered as a **plain order with "
+                "no automatic Stop Loss / Target**. Add SL/Target manually in Dhan's app, or "
+                "this position relies entirely on this page's own monitor + Approve Exit to close."
+            )
 
         if st.button("Exit Now (manual)"):
             pipeline.request_exit(position, "MANUAL_EXIT_REQUESTED")

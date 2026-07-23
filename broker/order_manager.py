@@ -105,14 +105,20 @@ def get_option_ltp(strike, option_type):
 
 def place_entry_order(position):
     """
-    Live mode places a Bracket Order (BO) - one order that gives Dhan the
-    entry plus config.BO_STOP_LOSS_POINTS/BO_PROFIT_POINTS as resting child
-    legs it manages itself from the moment entry fills, instead of relying
-    on this app polling price and you clicking Approve Exit (previously this
-    placed a plain product_type=INTRA MARKET order with no SL/target
-    attached at all - config.py already had the BO_* settings for this, but
-    nothing actually used them until now; SL/target had to be added by hand
-    in Dhan's own UI, seen live on 2026-07-22).
+    Live mode tries a Bracket Order (BO) first - one order that gives Dhan
+    the entry plus config.BO_STOP_LOSS_POINTS/BO_PROFIT_POINTS as resting
+    child legs it manages itself from the moment entry fills, instead of
+    relying on this app polling price and you clicking Approve Exit.
+
+    If Dhan rejects the BO specifically (seen live 2026-07-23: DH-906
+    "Transactions Fails" with funds confirmed sufficient - suspected to be
+    BO temporarily disabled for this script/segment by Dhan's RMS team
+    during volatile conditions, a known behavior per Dhan's own support
+    channels, not something this app can predict or control), falls back to
+    a plain MARKET/INTRA order with no SL/target attached - the original
+    pre-BO behavior - rather than leaving you unable to enter at all.
+    Returns bo_fallback=True in that case so the UI can warn that SL/target
+    need to be added manually in Dhan, same as before BO existed.
 
     BO requires a LIMIT entry (not MARKET) per Dhan's own constraints - the
     current LTP is used as that limit price. Returns exit_managed_by_broker
@@ -129,12 +135,13 @@ def place_entry_order(position):
             "security_id": security_id,
             "price": position["decision_snapshot"]["premium"],
             "exit_managed_by_broker": False,
+            "bo_fallback": False,
         }
 
     option_type = "CE" if position["direction"] == "CALL" else "PE"
     entry_price = get_option_ltp(position["strike"], option_type)
 
-    response = call_with_retry(
+    bo_response = call_with_retry(
         get_dhan_client().place_order,
         security_id=security_id,
         exchange_segment=dhanhq.FNO,
@@ -149,21 +156,57 @@ def place_entry_order(position):
         bo_stop_loss_Value=config.BO_STOP_LOSS_POINTS,
     )
 
-    print(f"Dhan place_order (ENTRY) response: {response}")
-    run_logger.log_order_response("ENTRY", position, response)
+    print(f"Dhan place_order (ENTRY, BO) response: {bo_response}")
+    run_logger.log_order_response("ENTRY_BO", position, bo_response)
 
-    if response.get("status") != "success":
-        raise OrderPlacementError(f"Entry order rejected by Dhan: {response}")
+    if bo_response.get("status") == "success":
+        order_id = _extract_order_id(bo_response)
+        run_logger.log_order_execution("ENTRY", position, order_id, status="SUBMITTED")
 
-    order_id = _extract_order_id(response)
-    run_logger.log_order_execution("ENTRY", position, order_id, status="SUBMITTED")
+        return {
+            "filled": False,
+            "order_id": order_id,
+            "security_id": security_id,
+            "price": None,
+            "exit_managed_by_broker": True,
+            "bo_fallback": False,
+        }
+
+    # BO rejected - fall back to a plain order rather than blocking entry
+    # entirely. No SL/target attached here - the caller/UI must warn this
+    # needs to be added manually in Dhan, same as before BO existed.
+    plain_response = call_with_retry(
+        get_dhan_client().place_order,
+        security_id=security_id,
+        exchange_segment=dhanhq.FNO,
+        transaction_type=dhanhq.BUY,
+        quantity=config.LOT_SIZE,
+        order_type=dhanhq.MARKET,
+        product_type=dhanhq.INTRA,
+        price=0,
+        trigger_price=0,
+        validity=dhanhq.DAY,
+    )
+
+    print(f"Dhan place_order (ENTRY, plain fallback) response: {plain_response}")
+    run_logger.log_order_response("ENTRY_PLAIN_FALLBACK", position, plain_response)
+
+    if plain_response.get("status") != "success":
+        raise OrderPlacementError(
+            f"Entry order rejected by Dhan - both BO ({bo_response}) and "
+            f"plain-order fallback ({plain_response}) failed."
+        )
+
+    order_id = _extract_order_id(plain_response)
+    run_logger.log_order_execution("ENTRY", position, order_id, status="SUBMITTED (BO fallback)")
 
     return {
         "filled": False,
         "order_id": order_id,
         "security_id": security_id,
         "price": None,
-        "exit_managed_by_broker": True,
+        "exit_managed_by_broker": False,
+        "bo_fallback": True,
     }
 
 
