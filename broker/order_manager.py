@@ -168,7 +168,15 @@ def place_entry_order(position):
             price=entry_price,
             targetPrice=target_price,
             stopLossPrice=stop_loss_price,
-            tag=position.get("correlation_id"),
+            # tag/correlationId deliberately omitted (it's optional per
+            # Dhan's docs) - seen live 2026-07-23 11:56: a DH-905 "missing
+            # required fields, bad values for parameters" rejection with our
+            # full UUID correlation_id passed as tag, while the one proven-
+            # working Super Order example found on this account used a
+            # short plain string ("VTT_Position") for correlationId, not a
+            # UUID - a real candidate for Dhan rejecting the UUID's
+            # format/length. This app already tracks its own order_id for
+            # traceability, so correlationId isn't needed here.
         )
     except Exception as ex:
         # place_super_order also raises ValueError client-side for invalid
@@ -176,8 +184,29 @@ def place_entry_order(position):
         # rejection here, both fall through to the plain-order fallback.
         so_response = {"status": "failure", "remarks": {"error_message": str(ex)}, "data": ""}
 
+    # Log the actual request parameters alongside the response - a DH-905
+    # "missing required fields, bad values" rejection (seen live
+    # 2026-07-23 11:56) needs the values that were actually sent to
+    # diagnose, since the SDK's own client-side validation already passed
+    # (this was a genuine server-side rejection) and log_order_response
+    # only otherwise captures the response, not the request.
+    print(
+        f"Dhan place_super_order (ENTRY) request: security_id={security_id} "
+        f"price={entry_price} targetPrice={target_price} stopLossPrice={stop_loss_price} "
+        f"quantity={config.LOT_SIZE}"
+    )
     print(f"Dhan place_super_order (ENTRY) response: {so_response}")
-    run_logger.log_order_response("ENTRY_SUPER_ORDER", position, so_response)
+    run_logger.log_order_response(
+        "ENTRY_SUPER_ORDER", position,
+        {
+            "request": {
+                "security_id": security_id, "price": entry_price,
+                "targetPrice": target_price, "stopLossPrice": stop_loss_price,
+                "quantity": config.LOT_SIZE,
+            },
+            "response": so_response,
+        },
+    )
 
     if so_response.get("status") == "success":
         order_id = _extract_order_id(so_response)
