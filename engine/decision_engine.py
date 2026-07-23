@@ -225,6 +225,24 @@ class DecisionEngine:
         elif short_term_momentum == "STRONG_BEARISH":
             score -= 2
 
+        # entry_quality HIGH (a confirmed breakout that isn't exhausted) is a
+        # faster, more reliable read than the 5-min EMA-based trend/EMA20/
+        # EMA50 checks above, which lag behind a sharp reversal - seen live
+        # 2026-07-23 09:52: trend read BEARISH and both EMA flags were
+        # bearish (3 points of drag) purely because EMA20/50 were still
+        # elevated from the pre-reversal highs, even though entry_quality
+        # was already HIGH - the move then ran another ~45 points before the
+        # aggregate score caught up enough to fire. Gives HIGH entry_quality
+        # a comparable bonus to STRONG short-term momentum instead of
+        # letting a lagging trend signal fully offset it.
+        if entry_quality == "HIGH":
+
+            if breakout_direction == "UP":
+                score += 2
+
+            elif breakout_direction == "DOWN":
+                score -= 2
+
         # Near resistance/support adjustments
         if resistance and (resistance - price) <= 10:
             score -= 1
