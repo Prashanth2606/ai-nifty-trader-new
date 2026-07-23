@@ -402,6 +402,77 @@ def get_broker_position(security_id, product_type):
     return None
 
 
+def get_actual_exit_price(security_id, quantity, since_time):
+    """
+    Finds the real fill price for a specific position's exit by scanning
+    today's order list, instead of get_broker_position()'s "sellAvg" field.
+
+    sellAvg is NOT this position's exit price - it's Dhan's DAY-CUMULATIVE,
+    quantity-weighted average across every buy/sell on this security+
+    product_type today. Seen live 2026-07-23: a user with two separate same-
+    day round trips on the same strike (65 qty each, actual sells at 145.05
+    and 166.80 per Dhan's own order history) got sellAvg values of
+    131.79616/134.29643 for both - neither matching either real trade,
+    because sellAvg blended in unrelated sells from other round trips on the
+    same security that day (confirmed live: buyQty/sellQty of 910 on one
+    position row, i.e. 14 lots of cumulative activity, not this one trade).
+
+    Scopes to SELL orders on this security_id, filled (orderStatus TRADED/
+    EXECUTED), quantity matching exactly (this app only ever buys/tracks one
+    LOT_SIZE lot per position - a manually-added extra quantity, like a user
+    doubling up outside the approval flow, shows up as a separate SELL order
+    with a different quantity and is correctly excluded here), and timed at
+    or after `since_time` (this position's entry) - taking the EARLIEST such
+    match, since that's the specific sell that closed THIS lot, not a later
+    unrelated one. Returns None if nothing matches - callers must not fall
+    back to sellAvg, since that's been shown to be actively misleading
+    rather than just imprecise.
+    """
+
+    response = call_with_retry(get_dhan_client().get_order_list)
+
+    if response.get("status") != "success":
+        return None
+
+    try:
+        since_dt = datetime.strptime(since_time, "%Y-%m-%d %H:%M:%S")
+    except (TypeError, ValueError):
+        return None
+
+    filled = {"TRADED", "EXECUTED"}
+    candidates = []
+
+    for row in response.get("data") or []:
+
+        if str(row.get("securityId")) != str(security_id):
+            continue
+        if row.get("transactionType") != "SELL":
+            continue
+        if str(row.get("orderStatus", "")).upper() not in filled:
+            continue
+        if (row.get("filledQty") or row.get("quantity") or 0) != quantity:
+            continue
+
+        ts = row.get("updateTime") or row.get("exchangeTime")
+        try:
+            ts_dt = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
+        except (TypeError, ValueError):
+            continue
+
+        if ts_dt < since_dt:
+            continue
+
+        candidates.append((ts_dt, row))
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda pair: pair[0])
+    _, best = candidates[0]
+
+    return _extract_fill_price(best)
+
+
 def poll_order(order_id):
     """Read-only - safe to call on every Streamlit rerun while an order is
     in flight. Returns {"status": FILLED|FAILED|PENDING, "price": float|None}.

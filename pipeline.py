@@ -263,8 +263,8 @@ def reconcile_external_close(position):
     """
     Checks Dhan's actual broker position for an OPEN position's security -
     catches a position that was closed outside this app, whether by a
-    manually placed order or (the expected path now) Dhan's own Bracket
-    Order SL/target leg firing, since nothing else here would ever notice
+    manually placed order or (the expected path now) Dhan's own Super Order
+    target/stop-loss leg firing, since nothing else here would ever notice
     that on its own. Paper mode has no real broker position to check
     against, so it's skipped entirely.
 
@@ -283,7 +283,15 @@ def reconcile_external_close(position):
     if broker_position is None or broker_position.get("netQty") != 0:
         return position
 
-    exit_price = broker_position.get("sellAvg") or None
+    # NOT broker_position.get("sellAvg") - that's Dhan's day-cumulative
+    # average across every sell on this security+product_type today, not
+    # this specific position's exit (seen live 2026-07-23: wrong by 10-30+
+    # points whenever the same strike had more than one same-day round
+    # trip). get_actual_exit_price scans the order list for the real fill.
+    exit_price = order_manager.get_actual_exit_price(
+        position["security_id"], position["quantity"],
+        position.get("entry_time") or position.get("created_at"),
+    )
 
     position_store.close_position(position, exit_price=exit_price, exit_reason="CLOSED_EXTERNALLY")
 

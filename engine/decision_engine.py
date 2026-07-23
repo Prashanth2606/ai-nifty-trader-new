@@ -346,6 +346,38 @@ class DecisionEngine:
             confidence = "MEDIUM"
             selected_trade = None
 
+        # A plain (non-STRONG) momentum reading is a single, sometimes noisy
+        # signal on its own - require phase to independently confirm too
+        # before trusting it alone. STRONG momentum skips this (already a
+        # stronger signal by itself). Seen live 2026-07-23: a BUY PUT fired
+        # at 11:53 on a single plain-BEARISH reading with phase still stuck
+        # at SIDEWAYS (move only -12.2, not enough to flip phase) - it
+        # reversed within minutes. The same day's 12:15 BUY PUT fired on
+        # plain-BEARISH momentum too, but phase had independently confirmed
+        # EARLY_DOWNTREND (move -28.35) - that one ran another ~76 points in
+        # the right direction. Two independent fast signals agreeing is a
+        # meaningfully different bar than one signal alone.
+
+        elif recommendation == "BUY CALL" and short_term_momentum == "BULLISH" and phase != "EARLY_UPTREND":
+
+            reasons.append(
+                f"1-min momentum only BULLISH (not STRONG) and phase ({phase}) hasn't "
+                f"independently confirmed EARLY_UPTREND - downgraded to WAIT"
+            )
+            recommendation = "WAIT"
+            confidence = "MEDIUM"
+            selected_trade = None
+
+        elif recommendation == "BUY PUT" and short_term_momentum == "BEARISH" and phase != "EARLY_DOWNTREND":
+
+            reasons.append(
+                f"1-min momentum only BEARISH (not STRONG) and phase ({phase}) hasn't "
+                f"independently confirmed EARLY_DOWNTREND - downgraded to WAIT"
+            )
+            recommendation = "WAIT"
+            confidence = "MEDIUM"
+            selected_trade = None
+
         # ------------------------
         # Room-to-Target Gate
         # ------------------------
