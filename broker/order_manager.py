@@ -92,8 +92,8 @@ def _security_id_and_lot_size(position):
 
 
 def get_option_ltp(strike, option_type):
-    """Fresh LTP for one specific contract - used for paper-mode fills, BO
-    entry limit pricing, and live P&L display. Live fills use the order's
+    """Fresh LTP for one specific contract - used for paper-mode fills, Super
+    Order entry limit pricing, and live P&L display. Live fills use the order's
     actual traded price instead, this is never used to determine a live
     entry/exit fill price after the fact."""
 
@@ -105,25 +105,31 @@ def get_option_ltp(strike, option_type):
 
 def place_entry_order(position):
     """
-    Live mode tries a Bracket Order (BO) first - one order that gives Dhan
-    the entry plus config.BO_STOP_LOSS_POINTS/BO_PROFIT_POINTS as resting
-    child legs it manages itself from the moment entry fills, instead of
-    relying on this app polling price and you clicking Approve Exit.
+    Live mode tries a Super Order first - one order that gives Dhan the
+    entry plus config.SUPER_ORDER_STOP_LOSS_POINTS/SUPER_ORDER_PROFIT_POINTS
+    as resting ENTRY_LEG/TARGET_LEG/STOP_LOSS_LEG legs it manages itself
+    from the moment entry fills, instead of relying on this app polling
+    price and you clicking Approve Exit.
 
-    If Dhan rejects the BO specifically (seen live 2026-07-23: DH-906
-    "Transactions Fails" with funds confirmed sufficient - suspected to be
-    BO temporarily disabled for this script/segment by Dhan's RMS team
-    during volatile conditions, a known behavior per Dhan's own support
-    channels, not something this app can predict or control), falls back to
-    a plain MARKET/INTRA order with no SL/target attached - the original
-    pre-BO behavior - rather than leaving you unable to enter at all.
-    Returns bo_fallback=True in that case so the UI can warn that SL/target
-    need to be added manually in Dhan, same as before BO existed.
+    NOT "Bracket Order" (BO) - Dhan confirmed directly (2026-07-23) BO isn't
+    supported via their API at all (always DH-906 "Transactions Fails",
+    funds/segment irrelevant - it's simply not wired up on the API side).
+    Super Order (dhanhq's place_super_order, POSTs to /super/orders) is
+    confirmed working via a read-only check against this same account
+    (2026-07-23: another tool already has live Super Orders running here,
+    e.g. correlationId "VTT_Position" - proof the endpoint is genuinely
+    usable, not just per Dhan support's word, which was inconsistent across
+    different answers on this same question).
 
-    BO requires a LIMIT entry (not MARKET) per Dhan's own constraints - the
-    current LTP is used as that limit price. Returns exit_managed_by_broker
-    so callers know the resting legs, not this app's own monitor loop, are
-    what will actually close the trade.
+    Uses product_type=MARGIN, matching what that other tool's working
+    orders use - untested whether INTRA would also work for Super Order,
+    MARGIN is the only combination confirmed live on this account so far.
+
+    Falls back to a plain MARKET/INTRA order with no SL/target attached (the
+    original pre-BO/Super-Order behavior) if the Super Order attempt fails
+    for any reason, rather than leaving you unable to enter at all. Returns
+    super_order_fallback=True in that case so the UI can warn that SL/target
+    need to be added manually in Dhan.
     """
 
     security_id, _ = _security_id_and_lot_size(position)
@@ -135,32 +141,46 @@ def place_entry_order(position):
             "security_id": security_id,
             "price": position["decision_snapshot"]["premium"],
             "exit_managed_by_broker": False,
-            "bo_fallback": False,
+            "super_order_fallback": False,
+            "product_type": config.PRODUCT_TYPE,
         }
 
     option_type = "CE" if position["direction"] == "CALL" else "PE"
     entry_price = get_option_ltp(position["strike"], option_type)
+    target_price = round(entry_price + config.SUPER_ORDER_PROFIT_POINTS, 2)
+    stop_loss_price = round(entry_price - config.SUPER_ORDER_STOP_LOSS_POINTS, 2)
 
-    bo_response = call_with_retry(
-        get_dhan_client().place_order,
-        security_id=security_id,
-        exchange_segment=dhanhq.FNO,
-        transaction_type=dhanhq.BUY,
-        quantity=config.LOT_SIZE,
-        order_type=dhanhq.LIMIT,
-        product_type=config.BO_PRODUCT_TYPE,
-        price=entry_price,
-        trigger_price=0,
-        validity=dhanhq.DAY,
-        bo_profit_value=config.BO_PROFIT_POINTS,
-        bo_stop_loss_Value=config.BO_STOP_LOSS_POINTS,
-    )
+    try:
+        if stop_loss_price <= 0:
+            raise ValueError(
+                f"Computed stop_loss_price {stop_loss_price} <= 0 "
+                f"(entry_price={entry_price} - {config.SUPER_ORDER_STOP_LOSS_POINTS})"
+            )
 
-    print(f"Dhan place_order (ENTRY, BO) response: {bo_response}")
-    run_logger.log_order_response("ENTRY_BO", position, bo_response)
+        so_response = call_with_retry(
+            get_dhan_client().place_super_order,
+            security_id=security_id,
+            exchange_segment=dhanhq.FNO,
+            transaction_type=dhanhq.BUY,
+            quantity=config.LOT_SIZE,
+            order_type=dhanhq.LIMIT,
+            product_type=dhanhq.MARGIN,
+            price=entry_price,
+            targetPrice=target_price,
+            stopLossPrice=stop_loss_price,
+            tag=position.get("correlation_id"),
+        )
+    except Exception as ex:
+        # place_super_order also raises ValueError client-side for invalid
+        # inputs (see its own validation) - treated the same as an HTTP
+        # rejection here, both fall through to the plain-order fallback.
+        so_response = {"status": "failure", "remarks": {"error_message": str(ex)}, "data": ""}
 
-    if bo_response.get("status") == "success":
-        order_id = _extract_order_id(bo_response)
+    print(f"Dhan place_super_order (ENTRY) response: {so_response}")
+    run_logger.log_order_response("ENTRY_SUPER_ORDER", position, so_response)
+
+    if so_response.get("status") == "success":
+        order_id = _extract_order_id(so_response)
         run_logger.log_order_execution("ENTRY", position, order_id, status="SUBMITTED")
 
         return {
@@ -169,12 +189,18 @@ def place_entry_order(position):
             "security_id": security_id,
             "price": None,
             "exit_managed_by_broker": True,
-            "bo_fallback": False,
+            "super_order_fallback": False,
+            # Super Order was placed with product_type=MARGIN (see docstring) -
+            # the resulting position is tracked under that product type in
+            # Dhan's own position book, not INTRADAY, so both external-close
+            # reconciliation (get_broker_position) and a manual square-off
+            # sell need to match against MARGIN for this specific position.
+            "product_type": dhanhq.MARGIN,
         }
 
-    # BO rejected - fall back to a plain order rather than blocking entry
-    # entirely. No SL/target attached here - the caller/UI must warn this
-    # needs to be added manually in Dhan, same as before BO existed.
+    # Super Order rejected - fall back to a plain order rather than blocking
+    # entry entirely. No SL/target attached here - the caller/UI must warn
+    # this needs to be added manually in Dhan.
     plain_response = call_with_retry(
         get_dhan_client().place_order,
         security_id=security_id,
@@ -193,12 +219,12 @@ def place_entry_order(position):
 
     if plain_response.get("status") != "success":
         raise OrderPlacementError(
-            f"Entry order rejected by Dhan - both BO ({bo_response}) and "
+            f"Entry order rejected by Dhan - both Super Order ({so_response}) and "
             f"plain-order fallback ({plain_response}) failed."
         )
 
     order_id = _extract_order_id(plain_response)
-    run_logger.log_order_execution("ENTRY", position, order_id, status="SUBMITTED (BO fallback)")
+    run_logger.log_order_execution("ENTRY", position, order_id, status="SUBMITTED (Super Order fallback)")
 
     return {
         "filled": False,
@@ -206,78 +232,53 @@ def place_entry_order(position):
         "security_id": security_id,
         "price": None,
         "exit_managed_by_broker": False,
-        "bo_fallback": True,
+        "super_order_fallback": True,
+        "product_type": dhanhq.INTRA,
     }
 
 
-class BoLegCancelError(Exception):
-    """Couldn't confidently identify/cancel a BO position's resting target/
-    stop-loss legs before a manual exit - deliberately fatal (see
-    cancel_bo_legs) rather than proceeding to place a square-off sell
-    alongside legs that might still be resting, which could double-sell."""
+class SuperOrderLegCancelError(Exception):
+    """Couldn't cancel a Super Order position's resting target/stop-loss
+    legs before a manual exit - deliberately fatal (see
+    cancel_super_order_legs) rather than proceeding to place a square-off
+    sell alongside legs that might still be resting, which could
+    double-sell."""
 
 
-def cancel_bo_legs(position):
+def cancel_super_order_legs(position):
     """
-    Cancels the resting TARGET/STOP_LOSS child legs of a Bracket Order
-    position before a manual exit - without this, a manual square-off sell
-    placed alongside still-resting legs could fill twice (the manual sell
-    plus whichever leg fires first), leaving a naked short.
+    Cancels the resting TARGET_LEG/STOP_LOSS_LEG of a Super Order position
+    before a manual exit - without this, a manual square-off sell placed
+    alongside still-resting legs could fill twice (the manual sell plus
+    whichever leg fires first), leaving a naked short.
 
-    CAUTION - unverified assumption: Dhan's get_order_list() response is
-    assumed to include a "legName" field (matching modify_order's leg_name
-    parameter) with values including "TARGET_LEG"/"STOP_LOSS_LEG" for a BO
-    order's child legs, and "PENDING"/"TRANSIT"/"OPEN"-ish statuses for
-    still-resting ones - not confirmed against a live BO order's actual
-    response shape. If no matching pending leg is found for this
-    security_id at all, this raises rather than silently assuming there's
-    nothing to cancel - on a real-money exit path, failing loud and forcing
-    a manual check in Dhan's own UI is far safer than guessing wrong.
+    Unlike the old BO approach (which had to search get_order_list() and
+    guess at field names), Dhan's cancel_super_order(order_id, leg_name)
+    takes the entry order's own order_id directly - this app already has
+    that stored on the position, so no lookup/guessing is needed here.
     """
 
-    security_id = position["security_id"]
+    order_id = position["entry_order_id"]
 
-    response = call_with_retry(get_dhan_client().get_order_list)
+    for leg_name in ("TARGET_LEG", "STOP_LOSS_LEG"):
 
-    if response.get("status") != "success":
-        raise BoLegCancelError(f"Could not fetch order list to find BO legs: {response}")
+        response = call_with_retry(get_dhan_client().cancel_super_order, order_id, leg_name)
+        print(f"Dhan cancel_super_order ({leg_name}) response: {response}")
 
-    terminal = {"TRADED", "EXECUTED", "REJECTED", "CANCELLED", "EXPIRED"}
-
-    legs = [
-        row for row in (response.get("data") or [])
-        if str(row.get("securityId")) == str(security_id)
-        and str(row.get("legName", "")).upper() in ("TARGET_LEG", "STOP_LOSS_LEG")
-        and str(row.get("orderStatus", "")).upper() not in terminal
-    ]
-
-    if not legs:
-        raise BoLegCancelError(
-            f"No resting TARGET_LEG/STOP_LOSS_LEG order found for security_id={security_id} "
-            f"- refusing to place a manual exit without confirming the resting legs are gone. "
-            f"Check Dhan's own app directly: if the legs are already cancelled/filled, this "
-            f"position may already be closed; if they're still resting, cancel them there "
-            f"before retrying here."
-        )
-
-    for leg in legs:
-        cancel_response = call_with_retry(get_dhan_client().cancel_order, leg["orderId"])
-        print(f"Dhan cancel_order (BO {leg.get('legName')}) response: {cancel_response}")
-        if cancel_response.get("status") != "success":
-            raise BoLegCancelError(
-                f"Failed to cancel BO {leg.get('legName')} order {leg['orderId']}: {cancel_response}"
+        if response.get("status") != "success":
+            raise SuperOrderLegCancelError(
+                f"Failed to cancel Super Order {leg_name} for order {order_id}: {response}"
             )
-        run_logger.log_order_execution(
-            f"CANCEL_{leg.get('legName')}", position, leg["orderId"], status="CANCELLED"
-        )
+
+        run_logger.log_order_execution(f"CANCEL_{leg_name}", position, order_id, status="CANCELLED")
 
 
 def place_exit_order(position):
     """Reuses the security_id already resolved and stored on the position at
-    entry time - no need to re-resolve it. For a broker-managed (BO)
-    position, cancels the resting target/stop-loss legs first (see
-    cancel_bo_legs) so this square-off can't collide with one of them
-    filling independently."""
+    entry time - no need to re-resolve it. For a broker-managed (Super
+    Order) position, cancels the resting target/stop-loss legs first (see
+    cancel_super_order_legs) so this square-off can't collide with one of
+    them filling independently."""
 
     security_id = position["security_id"]
 
@@ -298,7 +299,7 @@ def place_exit_order(position):
         }
 
     if position.get("exit_managed_by_broker"):
-        cancel_bo_legs(position)
+        cancel_super_order_legs(position)
 
     response = call_with_retry(
         get_dhan_client().place_order,
@@ -307,7 +308,12 @@ def place_exit_order(position):
         transaction_type=dhanhq.SELL,
         quantity=position["quantity"],
         order_type=dhanhq.MARKET,
-        product_type=dhanhq.INTRA,
+        # Must match whatever product_type entry actually used (MARGIN for a
+        # successful Super Order, INTRADAY for the plain-order fallback/pre-
+        # Super-Order behavior) - Dhan tracks the position under that same
+        # product type, and squaring off under the wrong one may not net it
+        # off correctly. See product_type handling in place_entry_order.
+        product_type=position.get("product_type") or dhanhq.INTRA,
         price=0,
         trigger_price=0,
         validity=dhanhq.DAY,
@@ -331,9 +337,9 @@ def place_exit_order(position):
 
 
 def cancel_order(position, order_id):
-    """Cancels a resting order - used to cancel a stale unfilled BO entry
-    LIMIT order so a fresh Approve click can re-price at the current LTP
-    instead of leaving the old order resting all day untouched."""
+    """Cancels a resting order - used to cancel a stale unfilled Super Order/
+    plain entry LIMIT order so a fresh Approve click can re-price at the
+    current LTP instead of leaving the old order resting all day untouched."""
 
     response = call_with_retry(get_dhan_client().cancel_order, order_id)
 

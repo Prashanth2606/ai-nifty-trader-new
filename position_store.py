@@ -84,7 +84,7 @@ def create_pending_entry(decision, mode):
         "mode": mode,
         "product_type": config.PRODUCT_TYPE,
         "exit_managed_by_broker": False,
-        "bo_fallback": False,
+        "super_order_fallback": False,
         "decision_snapshot": {
             "premium": trade.get("premium"),
             "stop_loss": decision.get("stop_loss"),

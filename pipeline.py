@@ -349,7 +349,8 @@ def approve_entry(position):
             entry_price=result["price"],
             entry_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             exit_managed_by_broker=result.get("exit_managed_by_broker", False),
-            bo_fallback=result.get("bo_fallback", False),
+            super_order_fallback=result.get("super_order_fallback", False),
+            product_type=result.get("product_type", locked.get("product_type")),
         )
 
     return position_store.transition(
@@ -358,7 +359,8 @@ def approve_entry(position):
         entry_order_id=result["order_id"],
         entry_order_placed_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         exit_managed_by_broker=result.get("exit_managed_by_broker", False),
-        bo_fallback=result.get("bo_fallback", False),
+        super_order_fallback=result.get("super_order_fallback", False),
+        product_type=result.get("product_type", locked.get("product_type")),
     )
 
 

@@ -28,23 +28,30 @@ PRODUCT_TYPE = "INTRADAY"        # maps to dhanhq.INTRA - used for exit/manual o
 EXCHANGE_SEGMENT_FNO = "NSE_FNO"  # maps to dhanhq.FNO / dhanhq.NSE_FNO
 ORDER_TYPE = "MARKET"
 
-# Bracket Order (BO) protective SL/target for live entries - Dhan manages
-# both as resting child orders once the entry fills, so exit no longer
-# depends on this app polling price or you clicking "Approve Exit" (see
-# broker/order_manager.py place_entry_order / pipeline.py
+# Super Order protective SL/target for live entries - Dhan manages both as
+# resting ENTRY_LEG/TARGET_LEG/STOP_LOSS_LEG legs once entry fills, so exit
+# no longer depends on this app polling price or you clicking "Approve Exit"
+# (see broker/order_manager.py place_entry_order / pipeline.py
 # reconcile_external_close). Both values are OPTION PREMIUM points, not
-# underlying Nifty index points like DecisionEngine's stop_loss/target_1 -
-# Dhan's BO API only ever understands offsets on the traded contract's own
-# price. BO_PROFIT_POINTS is a 2:1 reward:risk against the 15-point SL;
+# underlying Nifty index points like DecisionEngine's stop_loss/target_1.
+#
+# NOT "Bracket Order" (BO) - Dhan confirmed directly (2026-07-23) that BO as
+# a product type is NOT supported via their API at all (place_order with
+# product_type=BO/bo_profit_value/bo_stop_loss_Value always fails DH-906
+# "Transactions Fails", regardless of funds/segment/volatility - it's simply
+# not wired up on their API, only in their app/web UI). Super Order
+# (dhanhq's separate place_super_order/_super_order.py, POSTs to
+# /super/orders) is Dhan's actual API-supported equivalent.
+#
+# SUPER_ORDER_PROFIT_POINTS is a 2:1 reward:risk against the 15-point SL;
 # adjust if you want a different ratio.
-BO_PRODUCT_TYPE = "BO"           # maps to dhanhq.BO
-BO_STOP_LOSS_POINTS = 15
-BO_PROFIT_POINTS = 30
+SUPER_ORDER_STOP_LOSS_POINTS = 15
+SUPER_ORDER_PROFIT_POINTS = 30
 
-# If a BO entry LIMIT order hasn't filled within this many seconds, the UI
-# surfaces a "still unfilled - cancel and retry?" prompt instead of silently
-# waiting all day (DAY validity) on a stale order priced at a moment that's
-# already passed.
+# If a Super Order entry LIMIT order hasn't filled within this many seconds,
+# the UI surfaces a "still unfilled - cancel and retry?" prompt instead of
+# silently waiting all day (DAY validity) on a stale order priced at a
+# moment that's already passed.
 ENTRY_ORDER_TIMEOUT_SECONDS = 45
 
 # While a position sits at PENDING_ENTRY_APPROVAL, the app deliberately stops

@@ -191,7 +191,7 @@ if should_run:
             if position is not None:
                 with st.spinner("Checking position against stop-loss/target..."):
                     position_market, position_evaluation = pipeline.monitor_position(position)
-                # Broker-managed (Bracket Order) positions exit via Dhan's own
+                # Broker-managed (Super Order) positions exit via Dhan's own
                 # resting SL/target legs, caught next cycle by
                 # reconcile_external_close above - triggering our own
                 # approval-gated exit here too would place a second, unrelated
@@ -344,8 +344,8 @@ if position is not None:
 
         if position.get("exit_managed_by_broker"):
             st.caption(
-                f"🔒 Protected by a Dhan Bracket Order - SL (-{config.BO_STOP_LOSS_POINTS} pts premium) "
-                f"and Target (+{config.BO_PROFIT_POINTS} pts premium) are resting with the broker, "
+                f"🔒 Protected by a Dhan Super Order - SL (-{config.SUPER_ORDER_STOP_LOSS_POINTS} pts premium) "
+                f"and Target (+{config.SUPER_ORDER_PROFIT_POINTS} pts premium) are resting with the broker, "
                 f"no approval click needed for either. This page will pick up the close automatically "
                 f"once one fires."
             )
@@ -355,11 +355,11 @@ if position is not None:
                 "exit is refused rather than risking a duplicate order (check Dhan's app "
                 "directly in that case)."
             )
-        elif position.get("bo_fallback"):
+        elif position.get("super_order_fallback"):
             st.warning(
-                "⚠️ Dhan rejected the Bracket Order for this entry (likely BO temporarily "
-                "disabled for this contract/segment) - this entered as a **plain order with "
-                "no automatic Stop Loss / Target**. Add SL/Target manually in Dhan's app, or "
+                "⚠️ Dhan rejected the Super Order for this entry - this entered as a "
+                "**plain order with no automatic Stop Loss / Target**. Add SL/Target "
+                "manually in Dhan's app, or "
                 "this position relies entirely on this page's own monitor + Approve Exit to close."
             )
 
