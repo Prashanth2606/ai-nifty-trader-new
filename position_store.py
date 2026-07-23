@@ -17,6 +17,7 @@ import uuid
 from datetime import datetime
 
 import config
+import signal_store
 
 POSITION_DIR = "position"
 STATE_FILE = os.path.join(POSITION_DIR, "state.json")
@@ -185,6 +186,21 @@ def close_position(position, exit_price, exit_reason):
 
     if os.path.exists(STATE_FILE):
         os.remove(STATE_FILE)
+
+    # Reset the "already seen" dedup state that gates webapp.py's re-confirm-
+    # with-Claude/create-a-new-pending-position logic (see its `changed`
+    # check). Without this, if the engine proposes the exact same
+    # recommendation+instrument again after this position closes (quite
+    # likely if the setup is still valid), webapp.py treats it as
+    # "unchanged" and silently skips both re-confirming with Claude AND
+    # creating a new pending position - the banner still shows the fresh
+    # proposal (mislabeled "AI-confirmed" even though Claude was never
+    # asked this cycle) but no Approve Entry button ever appears, since no
+    # position actually got created. Seen live 2026-07-23 12:15-12:37: a
+    # repeat BUY PUT/23900 PE signal sat un-actionable for 22+ minutes this
+    # way after the prior position on that same instrument closed.
+    signal_store.write_last_recommendation(None)
+    signal_store.write_last_instrument(None)
 
 
 def reject_pending_entry(position):
